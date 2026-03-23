@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat CQRS - Kafka</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #36393f; color: #dcddde; margin: 0; display: flex; height: 100vh; }
+        #sidebar { width: 250px; background-color: #2f3136; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+        #sidebar input, #sidebar button { padding: 10px; border-radius: 5px; border: none; outline: none; }
+        #sidebar input { background-color: #202225; color: white; }
+        #sidebar button { background-color: #5865F2; color: white; cursor: pointer; font-weight: bold; }
+        #sidebar button:hover { background-color: #4752c4; }
+        
+        #chat-container { flex: 1; display: flex; flex-direction: column; }
+        #header { background-color: #36393f; padding: 20px; border-bottom: 1px solid #202225; font-weight: bold; font-size: 1.2em; }
+        #messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .message { background-color: #32353b; padding: 10px 15px; border-radius: 8px; max-width: fit-content; }
+        .message .meta { font-size: 0.8em; color: #72767d; margin-bottom: 5px; }
+        .message .meta strong { color: #fff; font-size: 1.1em; margin-right: 5px; }
+        
+        #input-area { padding: 20px; background-color: #36393f; }
+        #input-area form { display: flex; gap: 10px; }
+        #input-area input { flex: 1; padding: 15px; border-radius: 8px; border: none; background-color: #40444b; color: white; outline: none; font-size: 1em; }
+        #input-area button { padding: 0 25px; border-radius: 8px; border: none; background-color: #5865F2; color: white; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h3>Configuração</h3>
+        <input type="text" id="username" placeholder="Seu apelido..." value="">
+        <input type="text" id="room" placeholder="Nome da sala..." value="">
+        <button onclick="conectar()">Conectar na Sala</button>
+        <div id="status" style="color: #ed4245; font-size: 0.9em; margin-top: 10px;">Desconectado</div>
+    </div>
+
+    <div id="chat-container">
+        <div id="header">Sala: <span id="room-name">Nenhuma</span></div>
+        
+        <div id="messages">
+            </div>
+
+        <div id="input-area">
+            <form id="chat-form" onsubmit="enviarMensagem(event)">
+                <input type="text" id="message-input" placeholder="Digite sua mensagem aqui..." disabled>
+                <button type="submit" id="send-btn" disabled>Enviar</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+
+        function conectar() {
+            const room = document.getElementById('room').value;
+            const statusDiv = document.getElementById('status');
+            const roomNameSpan = document.getElementById('room-name');
+            const inputField = document.getElementById('message-input');
+            const sendBtn = document.getElementById('send-btn');
+
+            if (!room) return alert("Digite o nome de uma sala!");
+
+            if (ws) ws.close();
+
+            ws = new WebSocket(`ws://localhost:8080/ws?room=${room}`);
+
+            ws.onopen = () => {
+                statusDiv.innerHTML = "Conectado";
+                statusDiv.style.color = "#57F287";
+                roomNameSpan.innerText = room;
+                inputField.disabled = false;
+                sendBtn.disabled = false;
+                document.getElementById('messages').innerHTML = "";
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                const hora = new Date(data.moment).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+                const msgDiv = document.createElement('div');
+                msgDiv.className = 'message';
+                msgDiv.innerHTML = `
+                    <div class="meta"><strong>${data.message_sent.username}</strong> ${hora}</div>
+                    <div class="content">${data.message_sent.content}</div>
+                `;
+                
+                const messagesContainer = document.getElementById('messages');
+                messagesContainer.appendChild(msgDiv);
+
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            };
+
+            ws.onclose = () => {
+                statusDiv.innerHTML = "Desconectado";
+                statusDiv.style.color = "#ed4245";
+                inputField.disabled = true;
+                sendBtn.disabled = true;
+            };
+        }
+
+        async function enviarMensagem(event) {
+            event.preventDefault();
+
+            const username = document.getElementById('username').value;
+            const room = document.getElementById('room').value;
+            const inputField = document.getElementById('message-input');
+            const content = inputField.value;
+
+            if (!content.trim() || !username.trim()) return;
+
+            const comando = {
+                room_id: room,
+                username: username,
+                content: content
+            };
+
+            try {
+                await fetch('http://localhost:8080/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(comando)
+                });
+
+                inputField.value = '';
+            } catch (error) {
+                console.error("Erro ao enviar comando:", error);
+                alert("Falha ao enviar mensagem. A API está rodando?");
+            }
+        }
+    </script>
+</body>
+</html>
