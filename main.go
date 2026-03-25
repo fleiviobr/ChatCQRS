@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 	"github.com/ThreeDotsLabs/watermill"
-	"github.com/ThreeDotsLabs/watermill-kafka/v2/pkg/kafka"
+	"github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
 	"github.com/ThreeDotsLabs/watermill/components/cqrs"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/gorilla/websocket"
@@ -91,41 +91,72 @@ func main() {
 	saramaSubConfig := kafka.DefaultSaramaSubscriberConfig()
 	saramaSubConfig.Version = sarama.V3_0_0_0
 
-	publisher, _ := kafka.NewPublisher(kafka.PublisherConfig{
+	publisher, err := kafka.NewPublisher(kafka.PublisherConfig{
 		Brokers:               []string{"127.0.0.1:9092"},
 		Marshaler:             kafka.DefaultMarshaler{},
 		OverwriteSaramaConfig: saramaPubConfig,
 	}, logger)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	subscriber, _ := kafka.NewSubscriber(kafka.SubscriberConfig{
+	subscriber, err := kafka.NewSubscriber(kafka.SubscriberConfig{
 		Brokers:               []string{"127.0.0.1:9092"},
 		Unmarshaler:           kafka.DefaultMarshaler{},
 		ConsumerGroup:         "chat_api",
 		OverwriteSaramaConfig: saramaSubConfig,
 	}, logger)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	router, err := message.NewRouter(message.RouterConfig{}, logger)
 	if err != nil {
-		log.Fatal("Erro ao criar o router: ", err)
+		log.Fatal(err)
 	}
 
-	cqrsFacade, _ := cqrs.NewFacade(cqrs.FacadeConfig{
-		GenerateCommandsTopic: func(c string) string { return "commands" },
-		CommandHandlers: func(cb *cqrs.CommandBus, eb *cqrs.EventBus) []cqrs.CommandHandler {
-			return []cqrs.CommandHandler{SendMessageCommandHandler{EventBus: eb}}
+	commandBus, err := cqrs.NewCommandBusWithConfig(publisher, cqrs.CommandBusConfig{
+		GeneratePublishTopic: func(params cqrs.CommandBusGeneratePublishTopicParams) (string, error) {
+			return "commands", nil
 		},
-		CommandsPublisher:             publisher,
-		CommandsSubscriberConstructor: func(handlerName string) (message.Subscriber, error) { return subscriber, nil },
-
-		GenerateEventsTopic:         func(e string) string { return "events.messages" },
-		EventsPublisher:             publisher,
-		EventsSubscriberConstructor: func(handlerName string) (message.Subscriber, error) { return subscriber, nil },
-
-		Router: router,
-		Logger: logger,
-
-		CommandEventMarshaler: cqrs.JSONMarshaler{},
+		Marshaler: cqrs.JSONMarshaler{},
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	eventBus, err := cqrs.NewEventBusWithConfig(publisher, cqrs.EventBusConfig{
+		GeneratePublishTopic: func(params cqrs.GenerateEventPublishTopicParams) (string, error) {
+			return "events.messages", nil
+		},
+		Marshaler: cqrs.JSONMarshaler{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	handler := SendMessageCommandHandler{
+		EventBus: eventBus,
+	}
+
+	commandProcessor, err := cqrs.NewCommandProcessorWithConfig(router, cqrs.CommandProcessorConfig{
+			GenerateSubscribeTopic: func(params cqrs.CommandProcessorGenerateSubscribeTopicParams) (string, error) {
+				return "commands", nil
+		},
+			SubscriberConstructor: func(params cqrs.CommandProcessorSubscriberConstructorParams) (message.Subscriber, error) {
+				return subscriber, nil
+		},
+		Marshaler: cqrs.JSONMarshaler{},
+		Logger:    logger,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = commandProcessor.AddHandlers(handler)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	wsHub := NewWSHub()
 
@@ -163,7 +194,7 @@ func main() {
 			return
 		}
 
-		if err := cqrsFacade.CommandBus().Send(context.Background(), &cmd); err != nil {
+		if err := commandBus.Send(context.Background(), &cmd); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -186,9 +217,9 @@ func main() {
 			for {
 				if _, _, err := conn.ReadMessage(); err != nil {
 					wsHub.mu.Lock()
-            		delete(wsHub.clients[roomID], conn)
-            		wsHub.mu.Unlock()
-            		break
+					delete(wsHub.clients[roomID], conn)
+					wsHub.mu.Unlock()
+					break
 				}
 			}
 		}()
